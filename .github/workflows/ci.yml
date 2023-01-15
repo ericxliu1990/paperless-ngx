@@ -78,25 +78,6 @@ jobs:
           name: documentation
           path: site/
 
-  documentation-deploy:
-    name: "Deploy Documentation"
-    runs-on: ubuntu-22.04
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs:
-      - documentation
-    steps:
-      -
-        name: Checkout
-        uses: actions/checkout@v3
-      -
-        name: Deploy docs
-        uses: mhausenblas/mkdocs-deploy-gh-pages@master
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CUSTOM_DOMAIN: docs.paperless-ngx.com
-          CONFIG_FILE: mkdocs.yml
-          EXTRA_PACKAGES: build-base
-
   tests-backend:
     name: "Tests (${{ matrix.python-version }})"
     runs-on: ubuntu-22.04
