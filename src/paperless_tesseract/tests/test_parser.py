@@ -542,6 +542,78 @@ class TestParser(DirectoriesMixin, TestCase):
             ],
         )
 
+    def test_multi_page_tiff(self):
+        """
+        GIVEN:
+            - Multi-page TIFF image
+        WHEN:
+            - Image is parsed
+        THEN:
+            - Text from all pages extracted
+        """
+        parser = RasterisedDocumentParser(None)
+        parser.parse(
+            os.path.join(self.SAMPLE_FILES, "multi-page-images.tiff"),
+            "image/tiff",
+        )
+        self.assertTrue(os.path.isfile(parser.archive_path))
+        self.assertContainsStrings(
+            parser.get_text().lower(),
+            ["page 1", "page 2", "page 3"],
+        )
+
+    def test_multi_page_tiff_alpha(self):
+        """
+        GIVEN:
+            - Multi-page TIFF image
+            - Image include an alpha channel
+        WHEN:
+            - Image is parsed
+        THEN:
+            - Text from all pages extracted
+        """
+        parser = RasterisedDocumentParser(None)
+        sample_file = os.path.join(self.SAMPLE_FILES, "multi-page-images-alpha.tiff")
+        with tempfile.NamedTemporaryFile() as tmp_file:
+            shutil.copy(sample_file, tmp_file.name)
+            parser.parse(
+                tmp_file.name,
+                "image/tiff",
+            )
+            self.assertTrue(os.path.isfile(parser.archive_path))
+            self.assertContainsStrings(
+                parser.get_text().lower(),
+                ["page 1", "page 2", "page 3"],
+            )
+
+    def test_multi_page_tiff_alpha_srgb(self):
+        """
+        GIVEN:
+            - Multi-page TIFF image
+            - Image include an alpha channel
+            - Image is srgb colorspace
+        WHEN:
+            - Image is parsed
+        THEN:
+            - Text from all pages extracted
+        """
+        parser = RasterisedDocumentParser(None)
+        sample_file = os.path.join(
+            self.SAMPLE_FILES,
+            "multi-page-images-alpha-rgb.tiff",
+        )
+        with tempfile.NamedTemporaryFile() as tmp_file:
+            shutil.copy(sample_file, tmp_file.name)
+            parser.parse(
+                tmp_file.name,
+                "image/tiff",
+            )
+            self.assertTrue(os.path.isfile(parser.archive_path))
+            self.assertContainsStrings(
+                parser.get_text().lower(),
+                ["page 1", "page 2", "page 3"],
+            )
+
     def test_ocrmypdf_parameters(self):
         parser = RasterisedDocumentParser(None)
         params = parser.construct_ocrmypdf_parameters(
@@ -598,28 +670,14 @@ class TestParser(DirectoriesMixin, TestCase):
             - Text from the document is extracted
         """
         parser = RasterisedDocumentParser(None)
-        with mock.patch.object(
-            parser,
-            "construct_ocrmypdf_parameters",
-            wraps=parser.construct_ocrmypdf_parameters,
-        ) as wrapped:
 
-            parser.parse(
-                os.path.join(self.SAMPLE_FILES, "rtl-test.pdf"),
-                "application/pdf",
-            )
+        parser.parse(
+            os.path.join(self.SAMPLE_FILES, "rtl-test.pdf"),
+            "application/pdf",
+        )
 
-            # There isn't a good way to actually check this working, with RTL correctly return
-            #  as it would require tesseract-ocr-ara installed for everyone running the
-            #  test suite.  This test does provide the coverage though and attempts to ensure
-            # the force OCR happens
-            self.assertIsNotNone(parser.get_text())
-
-            self.assertEqual(parser.construct_ocrmypdf_parameters.call_count, 2)
-            # Check the last call kwargs
-            self.assertTrue(
-                parser.construct_ocrmypdf_parameters.call_args.kwargs["safe_fallback"],
-            )
+        # Copied from the PDF to here.  Don't even look at it
+        self.assertIn("ةﯾﻠﺧﺎدﻻ ةرازو", parser.get_text())
 
 
 class TestParserFileTypes(DirectoriesMixin, TestCase):

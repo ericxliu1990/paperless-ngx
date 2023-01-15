@@ -62,7 +62,11 @@ urlpatterns = [
                     SearchAutoCompleteView.as_view(),
                     name="autocomplete",
                 ),
-                re_path(r"^statistics/", StatisticsView.as_view(), name="statistics"),
+                re_path(
+                    r"^statistics/",
+                    StatisticsView.as_view(),
+                    name="statistics",
+                ),
                 re_path(
                     r"^documents/post_document/",
                     PostDocumentView.as_view(),
@@ -147,14 +151,21 @@ urlpatterns = [
     ),
     # TODO: with localization, this is even worse! :/
     # login, logout
-    path("accounts/", include("django.contrib.auth.urls")),
+    path(
+        "accounts/",
+        include(
+            "paperless.allauth_custom"
+            if settings.SSO_ENABLED
+            else "django.contrib.auth.urls",
+        ),
+    ),
     # Root of the Frontent
     re_path(r".*", login_required(IndexView.as_view()), name="base"),
 ]
 
 
 websocket_urlpatterns = [
-    re_path(r"ws/status/$", StatusConsumer.as_asgi()),
+    path(settings.BASE_URL.lstrip("/") + "ws/status/", StatusConsumer.as_asgi()),
 ]
 
 # Text in each page's <h1> (and above login form).

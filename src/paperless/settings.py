@@ -5,7 +5,9 @@ import multiprocessing
 import os
 import re
 import tempfile
+from typing import Dict
 from typing import Final
+from typing import List
 from typing import Optional
 from typing import Set
 from typing import Tuple
@@ -13,6 +15,7 @@ from urllib.parse import urlparse
 
 from celery.schedules import crontab
 from concurrent_log_handler.queue import setup_logging_queues
+from django.utils.text import slugify
 from django.utils.translation import gettext_lazy as _
 from dotenv import load_dotenv
 
@@ -45,7 +48,9 @@ def __get_boolean(key: str, default: str = "NO") -> bool:
     Return a boolean value based on whatever the user has supplied in the
     environment based on whether the value "looks like" it's True or not.
     """
-    return bool(os.getenv(key, default).lower() in ("yes", "y", "1", "t", "true"))
+    return bool(
+        os.getenv(key, default).lower() in ("yes", "y", "1", "t", "true"),
+    )
 
 
 def __get_int(key: str, default: int) -> int:
@@ -67,6 +72,13 @@ def __get_path(key: str, default: str) -> str:
     Return a normalized, absolute path based on the environment variable or a default
     """
     return os.path.abspath(os.path.normpath(os.environ.get(key, default)))
+
+
+def __get_list(key: str, default: Optional[List[str]] = None) -> List[str]:
+    """
+    Return a list of strings based on the environment variable or an empty list
+    """
+    return os.getenv(key).split(",") if os.getenv(key) else []
 
 
 def _parse_redis_url(env_redis: Optional[str]) -> Tuple[str]:
@@ -107,6 +119,57 @@ def _parse_redis_url(env_redis: Optional[str]) -> Tuple[str]:
     return (env_redis, env_redis)
 
 
+def _parse_beat_schedule() -> Dict:
+    schedule = {}
+    tasks = [
+        {
+            "name": "Check all e-mail accounts",
+            "env_key": "PAPERLESS_EMAIL_TASK_CRON",
+            # Default every ten minutes
+            "env_default": "*/10 * * * *",
+            "task": "paperless_mail.tasks.process_mail_accounts",
+        },
+        {
+            "name": "Train the classifier",
+            "env_key": "PAPERLESS_TRAIN_TASK_CRON",
+            # Default hourly at 5 minutes past the hour
+            "env_default": "5 */1 * * *",
+            "task": "documents.tasks.train_classifier",
+        },
+        {
+            "name": "Optimize the index",
+            "env_key": "PAPERLESS_INDEX_TASK_CRON",
+            # Default daily at midnight
+            "env_default": "0 0 * * *",
+            "task": "documents.tasks.index_optimize",
+        },
+        {
+            "name": "Perform sanity check",
+            "env_key": "PAPERLESS_SANITY_TASK_CRON",
+            # Default Sunday at 00:30
+            "env_default": "30 0 * * sun",
+            "task": "documents.tasks.sanity_check",
+        },
+    ]
+    for task in tasks:
+        # Either get the environment setting or use the default
+        value = os.getenv(task["env_key"], task["env_default"])
+        # Don't add disabled tasks to the schedule
+        if value == "disable":
+            continue
+        # I find https://crontab.guru/ super helpful
+        # crontab(5) format
+        #   - five time-and-date fields
+        #   - separated by at least one blank
+        minute, hour, day_month, month, day_week = value.split(" ")
+        schedule[task["name"]] = {
+            "task": task["task"],
+            "schedule": crontab(minute, hour, day_week, day_month, month),
+        }
+
+    return schedule
+
+
 # NEVER RUN WITH DEBUG IN PRODUCTION.
 DEBUG = __get_boolean("PAPERLESS_DEBUG", "NO")
 
@@ -117,14 +180,23 @@ DEBUG = __get_boolean("PAPERLESS_DEBUG", "NO")
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-STATIC_ROOT = __get_path("PAPERLESS_STATICDIR", os.path.join(BASE_DIR, "..", "static"))
+STATIC_ROOT = __get_path(
+    "PAPERLESS_STATICDIR",
+    os.path.join(BASE_DIR, "..", "static"),
+)
 
-MEDIA_ROOT = __get_path("PAPERLESS_MEDIA_ROOT", os.path.join(BASE_DIR, "..", "media"))
+MEDIA_ROOT = __get_path(
+    "PAPERLESS_MEDIA_ROOT",
+    os.path.join(BASE_DIR, "..", "media"),
+)
 ORIGINALS_DIR = os.path.join(MEDIA_ROOT, "documents", "originals")
 ARCHIVE_DIR = os.path.join(MEDIA_ROOT, "documents", "archive")
 THUMBNAIL_DIR = os.path.join(MEDIA_ROOT, "documents", "thumbnails")
 
-DATA_DIR = __get_path("PAPERLESS_DATA_DIR", os.path.join(BASE_DIR, "..", "data"))
+DATA_DIR = __get_path(
+    "PAPERLESS_DATA_DIR",
+    os.path.join(BASE_DIR, "..", "data"),
+)
 
 NLTK_DIR = __get_path("PAPERLESS_NLTK_DIR", "/usr/local/share/nltk_data")
 
@@ -136,7 +208,10 @@ MEDIA_LOCK = os.path.join(MEDIA_ROOT, "media.lock")
 INDEX_DIR = os.path.join(DATA_DIR, "index")
 MODEL_FILE = os.path.join(DATA_DIR, "classification_model.pickle")
 
-LOGGING_DIR = __get_path("PAPERLESS_LOGGING_DIR", os.path.join(DATA_DIR, "log"))
+LOGGING_DIR = __get_path(
+    "PAPERLESS_LOGGING_DIR",
+    os.path.join(DATA_DIR, "log"),
+)
 
 CONSUMPTION_DIR = __get_path(
     "PAPERLESS_CONSUMPTION_DIR",
@@ -150,10 +225,43 @@ SCRATCH_DIR = __get_path(
 )
 
 ###############################################################################
+# SSO Configuration
+###############################################################################
+
+
+def _get_oidc_server():
+    config_id = os.environ.get("PAPERLESS_SSO_OIDC_ID")
+    name = os.environ.get("PAPERLESS_SSO_OIDC_NAME")
+    url = os.environ.get("PAPERLESS_SSO_OIDC_URL")
+    client_id = os.environ.get("PAPERLESS_SSO_OIDC_CLIENT_ID")
+    secret = os.environ.get("PAPERLESS_SSO_OIDC_SECRET")
+    if name and url and client_id and secret:
+        return {
+            "id": config_id or slugify(name)[:30],
+            "name": name,
+            "server_url": url,
+            "APP": {
+                "client_id": client_id,
+                "secret": secret,
+            },
+        }
+
+
+_allauth_provider_modules = set(__get_list("PAPERLESS_SSO_MODULES"))
+_oidc_server = _get_oidc_server()
+if _oidc_server:
+    _allauth_provider_modules.add("openid_connect")
+
+SSO_ENABLED = __get_boolean(
+    "PAPERLESS_SSO_ENABLED",
+    str(bool(_allauth_provider_modules)),
+)
+
+###############################################################################
 # Application Definition                                                      #
 ###############################################################################
 
-env_apps = os.getenv("PAPERLESS_APPS").split(",") if os.getenv("PAPERLESS_APPS") else []
+env_apps = __get_list("PAPERLESS_APPS")
 
 INSTALLED_APPS = [
     "whitenoise.runserver_nostatic",
@@ -174,7 +282,16 @@ INSTALLED_APPS = [
     "rest_framework.authtoken",
     "django_filters",
     "django_celery_results",
+    "allauth",
+    "allauth.account",
+    "allauth.socialaccount",
 ] + env_apps
+
+if SSO_ENABLED:
+    INSTALLED_APPS += [
+        f"allauth.socialaccount.providers.{provider}"
+        for provider in _allauth_provider_modules
+    ]
 
 if DEBUG:
     INSTALLED_APPS.append("channels")
@@ -263,7 +380,9 @@ CHANNEL_LAYERS = {
 AUTO_LOGIN_USERNAME = os.getenv("PAPERLESS_AUTO_LOGIN_USERNAME")
 
 if AUTO_LOGIN_USERNAME:
-    _index = MIDDLEWARE.index("django.contrib.auth.middleware.AuthenticationMiddleware")
+    _index = MIDDLEWARE.index(
+        "django.contrib.auth.middleware.AuthenticationMiddleware",
+    )
     # This overrides everything the auth middleware is doing but still allows
     # regular login in case the provided user does not exist.
     MIDDLEWARE.insert(_index + 1, "paperless.auth.AutoLoginMiddleware")
@@ -280,6 +399,10 @@ if ENABLE_HTTP_REMOTE_USER:
         "django.contrib.auth.backends.RemoteUserBackend",
         "django.contrib.auth.backends.ModelBackend",
     ]
+    if SSO_ENABLED:
+        AUTHENTICATION_BACKENDS.append(
+            "allauth.account.auth_backends.AuthenticationBackend",
+        )
     REST_FRAMEWORK["DEFAULT_AUTHENTICATION_CLASSES"].append(
         "rest_framework.authentication.RemoteUserAuthentication",
     )
@@ -300,7 +423,9 @@ else:
 
 # We allow CORS from localhost:8000
 CORS_ALLOWED_ORIGINS = tuple(
-    os.getenv("PAPERLESS_CORS_ALLOWED_HOSTS", "http://localhost:8000").split(","),
+    os.getenv("PAPERLESS_CORS_ALLOWED_HOSTS", "http://localhost:8000").split(
+        ",",
+    ),
 )
 
 if DEBUG:
@@ -420,6 +545,7 @@ LANGUAGE_CODE = "en-us"
 
 LANGUAGES = [
     ("en-us", _("English (US)")),  # needs to be first to act as fallback language
+    ("ar-ar", _("Arabic")),
     ("be-by", _("Belarusian")),
     ("cs-cz", _("Czech")),
     ("da-dk", _("Danish")),
@@ -529,29 +655,10 @@ CELERY_RESULT_EXTENDED = True
 CELERY_RESULT_BACKEND = "django-db"
 CELERY_CACHE_BACKEND = "default"
 
+# https://docs.celeryq.dev/en/stable/userguide/configuration.html#beat-schedule
+CELERY_BEAT_SCHEDULE = _parse_beat_schedule()
 
-CELERY_BEAT_SCHEDULE = {
-    # Every ten minutes
-    "Check all e-mail accounts": {
-        "task": "paperless_mail.tasks.process_mail_accounts",
-        "schedule": crontab(minute="*/10"),
-    },
-    # Hourly at 5 minutes past the hour
-    "Train the classifier": {
-        "task": "documents.tasks.train_classifier",
-        "schedule": crontab(minute="5", hour="*/1"),
-    },
-    # Daily at midnight
-    "Optimize the index": {
-        "task": "documents.tasks.index_optimize",
-        "schedule": crontab(minute=0, hour=0),
-    },
-    # Weekly, Sunday at 00:30
-    "Perform sanity check": {
-        "task": "documents.tasks.sanity_check",
-        "schedule": crontab(minute=30, hour=0, day_of_week="sun"),
-    },
-}
+# https://docs.celeryq.dev/en/stable/userguide/configuration.html#beat-schedule-filename
 CELERY_BEAT_SCHEDULE_FILENAME = os.path.join(DATA_DIR, "celerybeat-schedule.db")
 
 # django setting.
@@ -594,7 +701,9 @@ CONSUMER_INOTIFY_DELAY: Final[float] = __get_float(
     0.5,
 )
 
-CONSUMER_DELETE_DUPLICATES = __get_boolean("PAPERLESS_CONSUMER_DELETE_DUPLICATES")
+CONSUMER_DELETE_DUPLICATES = __get_boolean(
+    "PAPERLESS_CONSUMER_DELETE_DUPLICATES",
+)
 
 CONSUMER_RECURSIVE = __get_boolean("PAPERLESS_CONSUMER_RECURSIVE")
 
@@ -649,7 +758,9 @@ OCR_ROTATE_PAGES_THRESHOLD = float(
 
 OCR_MAX_IMAGE_PIXELS: Optional[int] = None
 if os.environ.get("PAPERLESS_OCR_MAX_IMAGE_PIXELS") is not None:
-    OCR_MAX_IMAGE_PIXELS: int = int(os.environ.get("PAPERLESS_OCR_MAX_IMAGE_PIXELS"))
+    OCR_MAX_IMAGE_PIXELS: int = int(
+        os.environ.get("PAPERLESS_OCR_MAX_IMAGE_PIXELS"),
+    )
 
 OCR_USER_ARGS = os.getenv("PAPERLESS_OCR_USER_ARGS", "{}")
 
@@ -764,6 +875,7 @@ ENABLE_UPDATE_CHECK = os.getenv("PAPERLESS_ENABLE_UPDATE_CHECK", "default")
 if ENABLE_UPDATE_CHECK != "default":
     ENABLE_UPDATE_CHECK = __get_boolean("PAPERLESS_ENABLE_UPDATE_CHECK")
 
+
 ###############################################################################
 # Machine Learning                                                            #
 ###############################################################################
@@ -800,3 +912,50 @@ def _get_nltk_language_setting(ocr_lang: str) -> Optional[str]:
 NLTK_ENABLED: Final[bool] = __get_boolean("PAPERLESS_ENABLE_NLTK", "yes")
 
 NLTK_LANGUAGE: Optional[str] = _get_nltk_language_setting(OCR_LANGUAGE)
+
+
+###############################################################################
+# Single Sign-On (SSO)
+###############################################################################
+
+
+if SSO_ENABLED:
+    SSO_AUTO_LINK = __get_boolean("PAPERLESS_SSO_AUTO_LINK", "yes")
+    SSO_AUTO_LINK_MULTIPLE = __get_boolean(
+        "PAPERLESS_SSO_AUTO_LINK_MULTIPLE",
+        "yes",
+    )
+    SSO_SIGNUP_ONLY = __get_boolean(
+        "PAPERLESS_SSO_SIGNUP_ONLY",
+        "yes",
+    )
+    ACCOUNT_ADAPTER = "paperless.allauth_custom.CustomAccountAdapter"
+    ACCOUNT_DEFAULT_HTTP_PROTOCOL = "https"
+    ACCOUNT_EMAIL_VERIFICATION = "none"
+    LOGIN_ENABLE_SIGNUP = __get_boolean("PAPERLESS_LOGIN_ENABLE_SIGNUP", "no")
+    LOGIN_HIDE_PASSWORD_FORM = __get_boolean(
+        "PAPERLESS_LOGIN_HIDE_PASSWORD_FORM",
+        "no",
+    )
+    ACCOUNT_LOGOUT_ON_GET = True
+
+    # Disable all allauth forms except for the login form
+    class AllauthFormsOverride(dict):
+        def get(self, key, default=None):
+            return super().get(key, "paperless.allauth_custom.raise_404")
+
+    ACCOUNT_FORMS = AllauthFormsOverride(
+        login="allauth.account.forms.LoginForm",
+    )
+
+    SOCIALACCOUNT_ADAPTER = "paperless.allauth_custom.CustomSocialAccountAdapter"
+    SOCIALACCOUNT_LOGIN_ON_GET = __get_boolean(
+        "PAPERLESS_SSO_LOGIN_ON_GET",
+    )
+    SOCIALACCOUNT_PROVIDERS = json.loads(
+        os.environ.get("PAPERLESS_SSO_PROVIDERS", "{}"),
+    )
+    if _oidc_server:
+        SOCIALACCOUNT_PROVIDERS.setdefault("openid_connect", {})
+        SOCIALACCOUNT_PROVIDERS["openid_connect"].setdefault("SERVERS", [])
+        SOCIALACCOUNT_PROVIDERS["openid_connect"]["SERVERS"] += [_oidc_server]

@@ -11,6 +11,7 @@ name = "piwheels"
 [packages]
 dateparser = "~=1.1"
 django = "~=4.1"
+django-allauth = "~=0.52"
 django-cors-headers = "*"
 django-extensions = "*"
 django-filter = "~=22.1"
@@ -44,9 +45,6 @@ channels = "~=3.0"
 uvicorn = {extras = ["standard"], version = "*"}
 concurrent-log-handler = "*"
 "pdfminer.six" = "*"
-"backports.zoneinfo" = {version = "*", markers = "python_version < '3.9'"}
-"importlib-resources" = {version = "*", markers = "python_version < '3.9'"}
-zipp = {version = "*", markers = "python_version < '3.9'"}
 pyzbar = "*"
 mysqlclient = "*"
 celery = {extras = ["redis"], version = "*"}
@@ -74,17 +72,13 @@ channels-redis = "==3.4.1"
 [dev-packages]
 coveralls = "*"
 factory-boy = "*"
-pycodestyle = "*"
 pytest = "*"
 pytest-cov = "*"
 pytest-django = "*"
 pytest-env = "*"
 pytest-sugar = "*"
 pytest-xdist = "*"
-tox = "*"
 black = "*"
 pre-commit = "*"
-sphinx-autobuild = "*"
-myst-parser = "*"
 imagehash = "*"
 mkdocs-material = "*"
