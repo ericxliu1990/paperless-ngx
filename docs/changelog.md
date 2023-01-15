@@ -1,5 +1,7 @@
 # Changelog
 
+## paperless-ngx 1.12.0
+
 ## paperless-ngx 1.11.3
 
 ### Breaking Changes
